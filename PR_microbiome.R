@@ -5,43 +5,52 @@ library(data.table)
 library(DESeq2)
 library(dplyr)
 library(edgeR)
+library(vegan)
 
+## Theme options to set consistent ggplot aesthetics
 myTheme <- theme(panel.background = element_blank(),
                  axis.line = element_line(color = "black"),
                  text = element_text(color = 'black', size = 12),
                  axis.text = element_text(color = 'black'))
 
-# Note that for proper loading into R, you need to delete the # character before 'SampleID'
-# In the metadata txt file
+## Note that for proper loading into R, you need to delete the # character before 'SampleID'
+## In the metadata txt file that is used in QIIME2
 
+## Load in CP donor titration data from QIIME2 outputs to create a phyloseq object
 CPseq <- qza_to_phyloseq(features = "protein_qiime2_qza_files/CP_table.qza",
                          taxonomy = "protein_qiime2_qza_files/CP_taxonomy.qza",
                          tree = "protein_qiime2_qza_files/CP_rooted_tree.qza",
                          metadata = "protein_qiime2_featuretables/CP_mapping_file.txt")
 
+## Subset the phyloseq object to only include timepoints of interest
 #CPseq <- subset_samples(CPseq, Timepoint != "D-1")
 CPseq <- subset_samples(CPseq, Timepoint %in% c("D0", "D4", "D8"))
 CPseq <- subset_samples(CPseq, Treatment_Group2 %in% c("pct00", "pct06", "pct18"))
-CPseq@sam_data$Treatment_Group2 <- factor(CPseq@sam_data$Treatment_Group2,
-                                          labels = c("0%", "6%", "18%"))
+#CPseq@sam_data$Treatment_Group2 <- factor(CPseq@sam_data$Treatment_Group2,
+#                                         labels = c("0%", "6%", "18%"))
 
+## Load in GP recipient data from QIIME2 outputs to create a phyloseq object
 GPseq <- qza_to_phyloseq(features = "protein_qiime2_qza_files/GP_table.qza",
                          taxonomy = "protein_qiime2_qza_files/GP_taxonomy.qza",
                          tree = "protein_qiime2_qza_files/GP_rooted_tree.qza",
                          metadata = "protein_qiime2_featuretables/GP_mapping.txt")
 
+## Subset the phyloseq object to only include timepoints of interest
 GPseq <- subset_samples(GPseq, Timepoint %in% c("D07", "D14", "D19"))
 GPseq@sam_data$Treatment_Group2 <- factor(GPseq@sam_data$Treatment_Group2,
                                           labels = c("0%", "6%", "18%"))
 
+## Load in original titration data from QIIME2 outputs to create a phyloseq object
+## Note didn't use these data in the manuscript
 PTseq <- qza_to_phyloseq(features = "protein_qiime2_qza_files/PT_table.qza",
                          taxonomy = "protein_qiime2_qza_files/PT_taxonomy.qza",
                          tree = "protein_qiime2_qza_files/PT_rooted_tree.qza",
                          metadata = "protein_qiime2_featuretables/PT_N_L_mapping.txt")
 
+## Subset the phyloseq object to only include timepoints of interest
 PTseq <- subset_samples(PTseq, Timepoint %in% c("D-2", "D0", "D1", "D2", "D3", "D7"))
 
-# check the ranks and samples to ensure proper loading
+## check the ranks and samples to ensure proper loading
 rank_names(CPseq)
 rank_names(PTseq)
 rank_names(GPseq)
@@ -51,40 +60,50 @@ sample_names(PTseq)
 sample_names(GPseq)
 
 ###################################
-# CP Analysis
+# CP Donor Analysis
 ###################################
+
+## Remove uncharacterized phyla
 CPseq <- subset_taxa(CPseq, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
 
+## Remove taxa which have zero abundance
 CPprev <- apply(X = otu_table(CPseq),
                 MARGIN = ifelse(taxa_are_rows(CPseq), yes = 1, no = 2),
                 FUN = function(x) {sum(x > 0)})
 
+## Generate a data from showing the prevalence and abundance of taxa
 CPprev <- data.frame(Prevalence = CPprev,
                      TotalAbundance = taxa_sums(CPseq),
                      tax_table(CPseq))
 
+## Diagnostic plot of prevalence (% of samples) by total abundance
 ggplot(CPprev, aes(x = TotalAbundance, y = Prevalence / nsamples(CPseq), color = Phylum)) +
   geom_hline(yintercept = 0.05, alpha = 0.5, linetype = 2) +
   geom_point(size = 2, alpha = 0.7) +
   scale_x_log10() +labs(x = "Total Abundance", y = "Prevalence (fraction of samples)") +
   facet_wrap(~Phylum, 3) + theme(legend.position = "none") + myTheme
 
+## Show the average and sum prevalence by phyla
 plyr::ddply(CPprev, "Phylum", function(df1)
   {cbind(mean(df1$Prevalence), sum(df1$Prevalence))})
 
+## filter taxa which have abundance less than 5 in 75% of samples
 CPseqFilter <- genefilter_sample(CPseq, filterfun_sample(function(x) x > 5), 
                                  A = 0.25*nsamples(CPseq))
 CPseq <- prune_taxa(CPseqFilter, CPseq)
 
+## Normalize counts to relative abundance (%)
 CPseq <- transform_sample_counts(CPseq, function(x) 100 * x/sum(x))
+
+## Compute phyla abundances and keep only top 5 phyla
 CPphylumSum <- tapply(taxa_sums(CPseq), tax_table(CPseq)[, "Phylum"], sum, na.rm = T)
 CPtop5 <- names(sort(CPphylumSum, T))[1:5]
 CPseq <- prune_taxa((tax_table(CPseq)[, "Phylum"] %in% CPtop5), CPseq)
 
+## Create an ordination object using NMDS and bray distance
 CPord <- ordinate(CPseq, "NMDS", "bray")
-#plot_ordination(CPseq, CPord, type = "taxa", color = "Phylum") +
-#  facet_wrap(~Phylum)
 
+## Plot ordination (run ordPlot to see it)
 ordPlot <- plot_ordination(CPseq, CPord, type = "samples", color = "Treatment_Group2") +
   facet_wrap(~Timepoint) + myTheme + #stat_ellipse(level = 0.8) +
   labs(color = "Percent protein") +
@@ -93,12 +112,14 @@ ordPlot <- plot_ordination(CPseq, CPord, type = "samples", color = "Treatment_Gr
         strip.background = element_rect(color = "black", size = 1),
         legend.key=element_blank())
 
-library(vegan)
+## Compute PERMANOVA statistics using bray distance
+## NOTE change the two "D8" to other timepoints ie "D4" to see other timepoints
 cpMeta <- as(sample_data(CPseq), "data.frame")
 adonis(phyloseq::distance(subset_samples(CPseq, Timepoint == "D8"), 
                           method = "bray") ~ Treatment_Group2,
        data = cpMeta[cpMeta$Timepoint == "D8",])
 
+## Plot the NMDS 1 values over time as boxplots
 ordPlotDat <- ordPlot$data
 ggplot(ordPlotDat, aes(x = Treatment_Group2, y = NMDS1)) +
   geom_boxplot() + facet_wrap(~Timepoint) +
@@ -108,6 +129,7 @@ ggplot(ordPlotDat, aes(x = Treatment_Group2, y = NMDS1)) +
         strip.background = element_rect(color = "black", size = 1),
         legend.background=element_blank())
 
+## plot Shannon alpha diversity index as boxplots over time
 plot_richness(CPseq, measures = c("Shannon"),
              x = "Treatment_Group2") +
   facet_wrap(~Timepoint) + geom_boxplot() + myTheme +
@@ -117,6 +139,7 @@ plot_richness(CPseq, measures = c("Shannon"),
   labs(x = "Percent protein", y = "Shannon alpha diversity") +
   ggpubr::stat_compare_means(label.y.npc = 0.99, label.x.npc = 0.05)
 
+## plot Shannon alpha diversity index as lineplots over time
 plot_richness(CPseq, measures = c("Shannon"),
               x = "TimeNum", color = "Treatment_Group2") +
   stat_summary(aes(y = value), fun.y=mean, geom="line", size = 1) +
@@ -124,18 +147,7 @@ plot_richness(CPseq, measures = c("Shannon"),
   geom_point(size = 3) + myTheme + theme(axis.text.x = element_text(angle = 0)) +
   labs(x = "Days on diet", y = "Shannon alpha diversity", color = "Percent protein")
 
-PCdistBC <- distance(CPseq, method = "bray")
-PCdistUF <- distance(CPseq, method = "wUniFrac")
-
-PCordBC <- ordinate(CPseq, method = "PCoA", distance = PCdistBC)
-PCordUF <- ordinate(CPseq, method = "PCoA", distance = PCdistUF)
-
-plot_scree(PCordBC)
-plot_scree(PCordUF)
-
-plot_ordination(CPseq, PCordBC, color = "Treatment_Group2") +
-  geom_point() + facet_wrap(~Timepoint)
-
+## plot the relative abundance stacked barplots by phyla
 CPseq %>%
   psmelt() %>%
   group_by(Treatment_Group2, Timepoint, Phylum) %>%
@@ -147,6 +159,7 @@ CPseq %>%
   myTheme + theme(panel.border = element_rect(color = "black", fill = NA),
                  strip.background = element_rect(color = "black", size = 1))
 
+## Create data frames by phylum and genus for subsequent plots
 phylumFrame <- CPseq %>%
   psmelt() %>%
   group_by(Treatment_Group2, Timepoint, MouseID, Phylum) %>%
@@ -157,6 +170,7 @@ genusFrame <- CPseq %>%
   group_by(Treatment_Group2, Timepoint, MouseID, Genus) %>%
   summarise(Proportion = sum(Abundance, na.rm = T))
 
+## plot line plots of phyla abundances by diet and time
 ggplot(phylumFrame, aes(x = Treatment_Group2, y = Proportion)) +
   facet_grid(Phylum ~ Timepoint, scales = "free") + geom_point() +
   ggpubr::stat_compare_means(label.y.npc = 0.9, label.x.npc = 0.1) + myTheme +
@@ -165,7 +179,7 @@ ggplot(phylumFrame, aes(x = Treatment_Group2, y = Proportion)) +
   geom_smooth(method = "lm", se=FALSE, color="black", formula = y ~ x, aes(group = 1)) +
   labs(x = "Percent protein", y = "Relative abundance (%)")
 
-# Oscillospira, Coprococcus
+## Plot specific genera (based on DESeq2 results): Oscillospira, Coprococcus, Turicibacter
 oscilloFrame <- subset(genusFrame, (!is.na(Treatment_Group2)) &
                          Genus == "Turicibacter")
 
@@ -179,7 +193,7 @@ ggplot(oscilloFrame, aes(x = Timepoint, y = Proportion)) +
   theme(legend.key=element_blank())
 
 ## Differential Expression
-## Note: Rerun phyloseq object generation and but do not relabel treatment factor
+## Set up data
 CPmat <- as(otu_table(CPseq), "matrix")
 CPmat <- CPmat + 1
 
@@ -191,16 +205,16 @@ if( !is.null(CPtaxonomy)){
 CPdge <- DGEList(counts = CPmat, genes = CPtaxonomy, remove.zeros = T)
 CPdge <- calcNormFactors(CPdge, method = "RLE")
 
-plotMDS(CPdge)
-
 CPdays <- CPseq@sam_data$Timepoint
 CPprot <- CPseq@sam_data$Treatment_Group2
 
-# Approach 1 - combine time and tx factors to explicitly specify contrasts
+## generate limma/voom model
 CPmm <- model.matrix(~ 0 + interaction(Treatment_Group2, Timepoint),
                      data = data.frame(CPseq@sam_data))
+## rename columns to remove noisy labels
 colnames(CPmm) <- stringr::str_sub(colnames(CPmm), -8, -1)
 
+## Create model and specify all relevant contrasts
 CPv <- voom(CPdge, CPmm, plot = T)
 CPfit <- lmFit(CPv, CPmm)
 colnames(coef(CPfit))
@@ -219,18 +233,20 @@ CPcontrasts <- makeContrasts(
   d8_18v6 = pct06.D8-pct18.D8,
   levels = CPmm
 )
-
 CPtmp <- contrasts.fit(CPfit, CPcontrasts)
 CPtmp <- eBayes(CPtmp)
 colnames(coef(CPtmp))
 
+## choose the contrast of interest by changing the 'coef' value below
 CPtt <- topTable(CPtmp, coef = 6, sort.by = "P", n = Inf)
 CPtt$Taxa <- rownames(CPtt)
+
+## See how many taxa are differentially abundant
 length(which(CPtt$adj.P.Val < 0.05))
 
+## choose significant taxa into data frame
 CPsig <- cbind(as(CPtt, "data.frame"),
                as(tax_table(CPseq)[rownames(CPtt), ], "matrix"))
-
 CPsig <- subset(CPsig, !is.na(Genus))
 
 x = tapply(CPsig$logFC, CPsig$Phylum, function(x) max(x))
@@ -244,11 +260,13 @@ CPsig$Genus <- factor(as.character(CPsig$Genus), levels = names(x))
 CPsig$sig <- F
 CPsig[CPsig$adj.P.Val < 0.05,]$sig <- T
 
+## Set phyla levels for consistent plotting
 CPsig$Phylum <- factor(CPsig$Phylum,
                        levels = c("Actinobacteria", "Bacteroidetes",
                                   "Firmicutes", "Proteobacteria",
                                   "Verrucomicrobia"))
-  
+
+## plot differentially abundance
 ggplot(CPsig, aes(x = Genus, y = logFC)) +
   geom_point(shape = 21, aes(fill = Phylum, color = sig), size = 2.5) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
@@ -327,18 +345,6 @@ plot_richness(GPseq, measures = c("Shannon"),
   scale_color_manual(values = c("#d73027", "#fee090", "#4575b4")) +
   geom_point(size = 3) + myTheme + theme(axis.text.x = element_text(angle = 0)) +
   labs(x = "Days on diet", y = "Shannon alpha diversity", color = "Percent protein")
-
-PCdistBC <- distance(GPseq, method = "bray")
-PCdistUF <- distance(GPseq, method = "wUniFrac")
-
-PCordBC <- ordinate(GPseq, method = "PCoA", distance = PCdistBC)
-PCordUF <- ordinate(GPseq, method = "PCoA", distance = PCdistUF)
-
-plot_scree(PCordBC)
-plot_scree(PCordUF)
-
-plot_ordination(GPseq, PCordBC, color = "Treatment_Group2") +
-  geom_point() + facet_wrap(~Timepoint)
 
 GPseq %>%
   psmelt() %>%
